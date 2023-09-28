@@ -1,0 +1,146 @@
+---
+title: "AmFam-CA LoB-ETL, Author: Chinmay Patane"
+output: html_notebook
+
+#Details: At AmFam commercial Insurance Company, each month new enterprise rates need to be uploaded for every LoB (Commericial Auto, Worker's Compensation, Business Owners, Commercial Property, General Liability etc.) so that competitive market rate insurance premium can be offered to the customers. 
+
+#This ETL is made for LoB commercial Auto (CA). CA has rating algorithm which has data in hundreds of tabs for different factors (like BaseRate,Primaryt, Secondary etc). This ETL is made with a purpose of: 
+
+#Read the requirements from excel format
+#Extract the data from the large .xlsx enterprise data rating matrix
+#Extract the data, export in tabular format 
+#Create a report to make sure all the given requirements match data extracted and ready to be used in rating
+
+
+---
+
+```{r}
+
+#Initiate the ETL. Please enter your desired release number and product version
+rm(list = ls());
+Revision_Number = '23.3.20'
+Product_Version = '23080000'
+
+```
+
+
+```{r}
+#Loading Libraries
+
+library(dplyr);
+library(rio);
+
+```
+
+```{r}
+Get_Requirements = import("Requirements.xlsx");
+colnames(Get_Requirements) <- c(
+  "State",
+  "NB_Effective_Date",
+  "RN_Effective_Date",
+  "Rate_Table_Changes",
+  "REVISION"
+)
+
+#Initiate the report
+Requirements <- data.frame(
+  Rate_Table_Changes = character(),
+  IEL_Table = character(),
+  States = character(),
+  States_Total = character(),
+  Revisions = character(),
+  Number_of_Lines = integer(),
+  Revisions_Found = character(),
+  States_Found = character(),
+  States_Found_Total = character(),
+  Mismatch_Found = character(),
+  stringsAsFactors = FALSE
+)
+
+# Populate the 'Requirements' dataset
+unique_rates <- unique(Get_Requirements$Rate_Table_Changes)
+for (rate in unique_rates) {
+  States <- paste(Get_Requirements$State[Get_Requirements$Rate_Table_Changes == rate], "(", format(Get_Requirements$NB_Effective_Date[Get_Requirements$Rate_Table_Changes == rate], "%m/%d/%Y"), ")", sep = " ", collapse = ", ")
+  revisions <- paste(unique(Get_Requirements$REVISION[Get_Requirements$Rate_Table_Changes == rate]), collapse = ", ")
+  
+  
+  Requirements <- bind_rows(Requirements, data.frame(
+    Rate_Table_Changes = rate,
+    States = States,
+    Revisions = revisions,
+    stringsAsFactors = FALSE
+  ))
+}
+
+Requirements$States_Total <- sapply(strsplit(Requirements$States, ","), function(x) length(unique(trimws(x))))
+
+```
+
+```{r}
+#Get the rating matrix and filter the tabs
+Data = import_list("CA-Rating-Algorithm-Matrix.xlsx"); #Get Data
+Data1 <-Data[c(Requirements$Rate_Table_Changes)]; #Bring Required Tabs Out
+Mapping = import("/Users/CXP087/Desktop/Rate Upload/CA/Mapping.xlsx"); #Get mapping of factors vs tables
+Mapping <- Mapping[Mapping$Factor %in% Requirements$Rate_Table_Changes, ];
+Mapping <- Mapping[match(Requirements$Rate_Table_Changes, Mapping$Factor), ] #Re-order to match the datasets
+
+```
+
+```{r}
+Factor_Name= as.list(Mapping$Factor);
+Table_Name= as.list(Mapping$Table);
+
+#Export Table and Report 
+
+for (i in 1:length(Factor_Name)) {
+  f = Factor_Name[[i]]
+  t = Table_Name[[i]]
+  
+  Data3 = (Data1[f])
+  Data3 <- as.data.frame(Data3)
+  names(Data3) <- Data3[1,]
+  Data3 <- Data3[-1,]
+  
+  Data3 <- Data3[complete.cases(Data3$REVISION), ] #Get only those with revision number mentioned
+  Data3 <- Data3[Data3$REVISION == Revision_Number, ] #Put desired revision number for this release
+  
+  Data3$PRODUCT_VERSION= Product_Version        #Desired Product Version
+  Data3$SOURCE='Custom'                         #Source is always Custom
+  Data3<- Data3[,!names(Data3) %in% c("RESOURCE_OWNER","CUSTOMER_CODE","RELEASE_NUMBER","GID")]
+  
+  #Export the transformed data one by one into .xlsx to use for rating
+  export((Table = Data3),  paste(t, ".xlsx", sep=""))
+  
+ 
+  
+  #Make Report for whether given requirements match with the matrix data
+  Requirements$Number_of_Lines[i] <- nrow(Data3)
+  Requirements$Revisions_Found[i] <- paste(unique(Data3$REVISION), collapse = ", ")
+  Requirements$States_Found[i] <- paste(paste(unique(Data3$STATE_CODE), ' ( ', unique(Data3$EFFECTIVE_DATE) , ' )', sep = ''), collapse = ", ")
+  Requirements$IEL_Table[i] <- t
+  
+  #Fill the last column, Mismatch_Found in the report, based on the states mentioned in the requirements vs states found in the rating matrix, mentioned in the States_Found
+  X <- trimws(strsplit(as.character(Requirements$States[i]), ",")[[1]])
+  Y <- trimws(strsplit(as.character(Requirements$States_Found[i]), ",")[[1]])
+
+
+  if (all(X %in% Y) && all(Y %in% X)) {
+  Requirements$Mismatch_Found[i] <- "No"
+} else {
+  Requirements$Mismatch_Found[i] <- "Yes"
+}
+}
+
+Requirements$States_Found_Total <- sapply(strsplit(Requirements$States_Found, ","), function(x) length(unique(trimws(x))))
+
+#Export the report as well in .xlsx format
+export((Table = Requirements),  "Requirements_Report.xlsx")
+
+
+```
+
+
+
+
+
+
